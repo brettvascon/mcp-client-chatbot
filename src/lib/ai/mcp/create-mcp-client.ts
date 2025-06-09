@@ -1,22 +1,29 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   type MCPServerInfo,
-  MCPSseConfigZodSchema,
+  MCPRemoteConfigZodSchema,
   MCPStdioConfigZodSchema,
   type MCPServerConfig,
   type MCPToolInfo,
 } from "app-types/mcp";
 import { jsonSchema, Tool, tool, ToolExecutionOptions } from "ai";
-import { isMaybeSseConfig, isMaybeStdioConfig } from "./is-mcp-config";
+import { isMaybeRemoteConfig, isMaybeStdioConfig } from "./is-mcp-config";
 import logger from "logger";
 import type { ConsolaInstance } from "consola";
 import { colorize } from "consola/utils";
-import { createDebounce, isNull, Locker, toAny } from "lib/utils";
+import {
+  createDebounce,
+  errorToString,
+  isNull,
+  Locker,
+  toAny,
+} from "lib/utils";
 
-import { safe, watchError } from "ts-safe";
+import { safe } from "ts-safe";
+import { IS_MCP_SERVER_REMOTE_ONLY } from "lib/const";
 
 type ClientOptions = {
   autoDisconnectSeconds?: number;
@@ -85,17 +92,21 @@ export class MCPClient {
     try {
       const startedAt = Date.now();
       this.locker.lock();
+
       const client = new Client({
-        name: this.name,
+        name: "mcp-chatbot-client",
         version: "1.0.0",
       });
 
-      let transport: Transport;
       // Create appropriate transport based on server config type
       if (isMaybeStdioConfig(this.serverConfig)) {
+        // Skip stdio transport
+        if (IS_MCP_SERVER_REMOTE_ONLY) {
+          throw new Error("Stdio transport is not supported");
+        }
+
         const config = MCPStdioConfigZodSchema.parse(this.serverConfig);
-        transport = new StdioClientTransport({
-          stderr: process.stderr,
+        const transport = new StdioClientTransport({
           command: config.command,
           args: config.args,
           // Merge process.env with config.env, ensuring PATH is preserved and filtering out undefined values
@@ -110,20 +121,36 @@ export class MCPClient {
           ),
           cwd: process.cwd(),
         });
-      } else if (isMaybeSseConfig(this.serverConfig)) {
-        const config = MCPSseConfigZodSchema.parse(this.serverConfig);
+
+        await client.connect(transport);
+      } else if (isMaybeRemoteConfig(this.serverConfig)) {
+        const config = MCPRemoteConfigZodSchema.parse(this.serverConfig);
+        const abortController = new AbortController();
         const url = new URL(config.url);
-        transport = new SSEClientTransport(url, {
-          requestInit: {
-            headers: config.headers,
-          },
-        });
+        try {
+          const transport = new StreamableHTTPClientTransport(url, {
+            requestInit: {
+              headers: config.headers,
+              signal: abortController.signal,
+            },
+          });
+          await client.connect(transport);
+        } catch {
+          this.log.info(
+            "Streamable HTTP connection failed, falling back to SSE transport",
+          );
+          const transport = new SSEClientTransport(url, {
+            requestInit: {
+              headers: config.headers,
+              signal: abortController.signal,
+            },
+          });
+          await client.connect(transport);
+        }
       } else {
         throw new Error("Invalid server config");
       }
 
-      await client.connect(transport);
-      client.onerror = this.log.error;
       this.log.info(
         `Connected to MCP server in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`,
       );
@@ -170,17 +197,24 @@ export class MCPClient {
     return this.client;
   }
   async disconnect() {
-    if (this.isConnected) {
-      this.log.info("Disconnecting from MCP server");
-      await this.locker.wait();
-      this.isConnected = false;
-      const client = this.client;
-      this.client = undefined;
-      await client?.close().catch((e) => this.log.error(e));
-    }
+    this.log.info("Disconnecting from MCP server");
+    await this.locker.wait();
+    this.isConnected = false;
+    const client = this.client;
+    this.client = undefined;
+    await client?.close().catch((e) => this.log.error(e));
   }
   async callTool(toolName: string, input?: unknown) {
     return safe(() => this.log.info("tool call", toolName))
+
+      .ifOk(() => {
+        if (this.error) {
+          throw new Error(
+            "MCP Server is currently in an error state. Please check the configuration and try refreshing the server.",
+          );
+        }
+      })
+      .ifOk(() => this.scheduleAutoDisconnect()) // disconnect if autoDisconnectSeconds is set
       .map(async () => {
         const client = await this.connect();
         return client?.callTool({
@@ -195,7 +229,29 @@ export class MCPClient {
         return v;
       })
       .ifOk(() => this.scheduleAutoDisconnect())
-      .watch(watchError((e) => this.log.error("Tool call failed", toolName, e)))
+      .watch((status) => {
+        if (!status.isOk) {
+          this.log.error("Tool call failed", toolName, status.error);
+        } else if (status.value?.isError) {
+          this.log.error("Tool call failed", toolName, status.value.content);
+        }
+      })
+      .ifFail((error) => {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: {
+                  message: errorToString(error),
+                  name: error?.name,
+                },
+              }),
+            },
+          ],
+          isError: true,
+        };
+      })
       .unwrap();
   }
 }

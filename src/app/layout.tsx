@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/layouts/theme-provider";
-import { SessionProvider } from "next-auth/react";
 import { Toaster } from "ui/sonner";
-
+import { BASE_THEMES } from "lib/const";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale } from "next-intl/server";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -20,26 +21,31 @@ export const metadata: Metadata = {
     "MCP Chat is a chatbot that uses the MCP Tools to answer questions.",
 };
 
-export default function RootLayout({
+const themes = BASE_THEMES.flatMap((t) => [t, `${t}-dark`]);
+
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const locale = await getLocale();
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          enableSystem
+          attribute="data-theme"
+          defaultTheme="default-dark"
+          themes={themes}
           disableTransitionOnChange
         >
-          <SessionProvider>
-            {children}
-            <Toaster richColors />
-          </SessionProvider>
+          <NextIntlClientProvider>
+            <div id="root">
+              {children}
+              <Toaster richColors />
+            </div>
+          </NextIntlClientProvider>
         </ThemeProvider>
       </body>
     </html>

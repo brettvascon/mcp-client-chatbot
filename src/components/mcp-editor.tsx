@@ -2,7 +2,7 @@
 import { useState, useMemo } from "react";
 import {
   MCPServerConfig,
-  MCPSseConfigZodSchema,
+  MCPRemoteConfigZodSchema,
   MCPStdioConfigZodSchema,
 } from "app-types/mcp";
 import { Input } from "./ui/input";
@@ -19,17 +19,21 @@ import { mutate } from "swr";
 import { Loader } from "lucide-react";
 import {
   isMaybeMCPServerConfig,
-  isMaybeSseConfig,
+  isMaybeRemoteConfig,
 } from "lib/ai/mcp/is-mcp-config";
-import { updateMcpClientAction } from "@/app/api/mcp/actions";
-import { insertMcpClientAction } from "@/app/api/mcp/actions";
-import equal from "fast-deep-equal";
+
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
 import { z } from "zod";
+import { useTranslations } from "next-intl";
+import {
+  existMcpClientByServerNameAction,
+  saveMcpClientAction,
+} from "@/app/api/mcp/actions";
 
 interface MCPEditorProps {
   initialConfig?: MCPServerConfig;
   name?: string;
+  id?: string;
 }
 
 const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
@@ -41,7 +45,7 @@ const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
   }
 }
 
-/** SSE Example */
+/** SSE,Streamable HTTP Example */
 {
   "url": "https://api.example.com",
   "headers": {
@@ -52,13 +56,15 @@ const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
 export default function MCPEditor({
   initialConfig,
   name: initialName,
+  id,
 }: MCPEditorProps) {
-  const shouldInsert = useMemo(() => isNull(initialName), [initialName]);
+  const t = useTranslations();
+  const shouldInsert = useMemo(() => isNull(id), [id]);
+
   const [isLoading, setIsLoading] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
 
-  const convertDebounce = useMemo(() => createDebounce(), []);
   const errorDebounce = useMemo(() => createDebounce(), []);
 
   // State for form fields
@@ -73,14 +79,14 @@ export default function MCPEditor({
 
   // Name validation schema
   const nameSchema = z.string().regex(/^[a-zA-Z0-9\-]+$/, {
-    message: "Name must contain only alphanumeric characters and hyphens",
+    message: t("MCP.nameMustContainOnlyAlphanumericCharactersAndHyphens"),
   });
 
   const validateName = (nameValue: string): boolean => {
     const result = nameSchema.safeParse(nameValue);
     if (!result.success) {
       setNameError(
-        "Name must contain only alphanumeric characters (A-Z, a-z, 0-9) and hyphens (-)",
+        t("MCP.nameMustContainOnlyAlphanumericCharactersAndHyphens"),
       );
       return false;
     }
@@ -100,8 +106,8 @@ export default function MCPEditor({
 
   // Validate
   const validateConfig = (jsonConfig: unknown): boolean => {
-    const result = isMaybeSseConfig(jsonConfig)
-      ? MCPSseConfigZodSchema.safeParse(jsonConfig)
+    const result = isMaybeRemoteConfig(jsonConfig)
+      ? MCPRemoteConfigZodSchema.safeParse(jsonConfig)
       : MCPStdioConfigZodSchema.safeParse(jsonConfig);
     if (!result.success) {
       handleErrorWithToast(result.error, "mcp-editor-error");
@@ -115,28 +121,35 @@ export default function MCPEditor({
     if (!validateConfig(config)) return;
     if (!name) {
       return handleErrorWithToast(
-        new Error("Name is required"),
+        new Error(t("MCP.nameIsRequired")),
         "mcp-editor-error",
       );
     }
 
     if (!validateName(name)) {
       return handleErrorWithToast(
-        new Error(
-          "Name must contain only alphanumeric characters (A-Z, a-z, 0-9) and hyphens (-)",
-        ),
+        new Error(t("MCP.nameMustContainOnlyAlphanumericCharactersAndHyphens")),
         "mcp-editor-error",
       );
     }
 
     safe(() => setIsLoading(true))
+      .map(async () => {
+        if (shouldInsert) {
+          const exist = await existMcpClientByServerNameAction(name);
+          if (exist) {
+            throw new Error(t("MCP.nameAlreadyExists"));
+          }
+        }
+      })
       .map(() =>
-        shouldInsert
-          ? insertMcpClientAction(name, config)
-          : updateMcpClientAction(name, config),
+        saveMcpClientAction({
+          name,
+          config,
+          id,
+        }),
       )
-      .watch(() => setIsLoading(false))
-      .ifOk(() => toast.success("Configuration saved successfully"))
+      .ifOk(() => toast.success(t("MCP.configurationSavedSuccessfully")))
       .watch(watchOk(() => mutate("mcp-list")))
       .ifOk(() => router.push("/mcp"))
       .ifFail(handleErrorWithToast);
@@ -147,15 +160,8 @@ export default function MCPEditor({
     const result = safeJSONParse(data);
     errorDebounce.clear();
     if (result.success) {
-      const isDiff = !equal(result.value, config);
       setConfig(result.value as MCPServerConfig);
       setJsonError(null);
-      if (isDiff) {
-        convertDebounce(
-          () => setJsonString(JSON.stringify(result.value, null, 2)),
-          5000,
-        );
-      }
     } else if (data.trim() !== "") {
       errorDebounce(() => {
         setJsonError(
@@ -180,7 +186,7 @@ export default function MCPEditor({
             setName(e.target.value);
             if (e.target.value) validateName(e.target.value);
           }}
-          placeholder="Enter mcp server name"
+          placeholder={t("MCP.enterMcpServerName")}
           className={nameError ? "border-destructive" : ""}
         />
         {nameError && <p className="text-xs text-destructive">{nameError}</p>}
@@ -191,7 +197,7 @@ export default function MCPEditor({
         </div>
 
         {/* Split view for config editor */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Left side: Textarea for editing */}
           <div className="space-y-2">
             <Textarea
@@ -204,8 +210,8 @@ export default function MCPEditor({
           </div>
 
           {/* Right side: JSON view */}
-          <div className="space-y-2">
-            <div className="border border-input rounded-md p-4 h-[40vh] overflow-auto relative">
+          <div className="space-y-2 hidden sm:block">
+            <div className="border border-input rounded-md p-4 h-[40vh] overflow-auto relative bg-secondary">
               <Label
                 htmlFor="config-view"
                 className="text-xs text-muted-foreground mb-2"
@@ -235,7 +241,7 @@ export default function MCPEditor({
         {isLoading ? (
           <Loader className="size-4 animate-spin" />
         ) : (
-          <span className="font-bold">Save Configuration</span>
+          <span className="font-bold">{t("MCP.saveConfiguration")}</span>
         )}
       </Button>
     </div>

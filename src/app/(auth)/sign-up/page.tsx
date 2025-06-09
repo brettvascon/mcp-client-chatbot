@@ -16,16 +16,18 @@ import { useObjectState } from "@/hooks/use-object-state";
 import { cn } from "lib/utils";
 import { ChevronLeft, Loader } from "lucide-react";
 import { toast } from "sonner";
-import { safe, watchError } from "ts-safe";
+import { safe } from "ts-safe";
 import { UserZodSchema } from "app-types/user";
-import { existsByEmailAction, registerAction } from "@/app/api/auth/actions";
-import { handleErrorWithToast } from "ui/shared-toast";
+import { existsByEmailAction } from "@/app/api/auth/actions";
+import { authClient } from "auth/client";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 
 export default function SignUpPage() {
+  const t = useTranslations();
   const [step, setStep] = useState(1);
-  const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useObjectState({
     email: "",
     name: "",
@@ -33,9 +35,9 @@ export default function SignUpPage() {
   });
 
   const steps = [
-    "Start your journey with us by entering your email address",
-    "I'll use this name when we chat",
-    "Create a strong password to secure your account",
+    t("Auth.SignUp.step1"),
+    t("Auth.SignUp.step2"),
+    t("Auth.SignUp.step3"),
   ];
 
   const safeProcessWithLoading = function <T>(fn: () => Promise<T>) {
@@ -50,14 +52,14 @@ export default function SignUpPage() {
   const successEmailStep = async () => {
     const { success } = UserZodSchema.shape.email.safeParse(formData.email);
     if (!success) {
-      toast.error("Invalid email address");
+      toast.error(t("Auth.SignUp.invalidEmail"));
       return;
     }
     const exists = await safeProcessWithLoading(() =>
       existsByEmailAction(formData.email),
     ).orElse(false);
     if (exists) {
-      toast.error("Email already exists");
+      toast.error(t("Auth.SignUp.emailAlreadyExists"));
       return;
     }
     setStep(2);
@@ -66,7 +68,7 @@ export default function SignUpPage() {
   const successNameStep = () => {
     const { success } = UserZodSchema.shape.name.safeParse(formData.name);
     if (!success) {
-      toast.error("Name is required");
+      toast.error(t("Auth.SignUp.nameRequired"));
       return;
     }
     setStep(3);
@@ -77,35 +79,39 @@ export default function SignUpPage() {
       formData.password,
     );
     if (!success) {
-      toast.error("Password must be at least 8 characters long");
+      toast.error(t("Auth.SignUp.passwordRequired"));
       return;
     }
-    const user = await safeProcessWithLoading(() =>
-      registerAction({
-        ...formData,
-        image: null,
-        plainPassword: formData.password,
-      }),
-    )
-      .watch(watchError(handleErrorWithToast))
-      .unwrap();
-    if (user) {
-      toast.success("Account created successfully");
-      router.push("/login");
-    }
+    await safeProcessWithLoading(() =>
+      authClient.signUp.email(
+        {
+          email: formData.email,
+          password: formData.password,
+          name: formData.name,
+        },
+        {
+          onError(ctx) {
+            toast.error(ctx.error.message || ctx.error.statusText);
+          },
+          onSuccess() {
+            router.push("/");
+          },
+        },
+      ),
+    ).unwrap();
   };
 
   return (
-    <div className="w-full h-full flex flex-col p-4 md:p-8 justify-center relative">
+    <div className="animate-in fade-in duration-1000 w-full h-full flex flex-col p-4 md:p-8 justify-center relative">
       <div className="w-full flex justify-end absolute top-0 right-0">
-        <Link href="/login">
-          <Button variant="ghost">Login</Button>
+        <Link href="/sign-in">
+          <Button variant="ghost">{t("Auth.SignUp.signIn")}</Button>
         </Link>
       </div>
-      <Card className="w-full md:max-w-md bg-background border-none mx-auto gap-0">
+      <Card className="w-full md:max-w-md bg-background border-none mx-auto gap-0 shadow-none">
         <CardHeader>
           <CardTitle className="text-2xl text-center ">
-            Create an account
+            {t("Auth.SignUp.title")}
           </CardTitle>
           <CardDescription className="py-12">
             <div className="flex flex-col gap-2">
@@ -207,7 +213,7 @@ export default function SignUpPage() {
                 onClick={backStep}
               >
                 <ChevronLeft className="size-4" />
-                Back
+                {t("Common.back")}
               </Button>
               <Button
                 disabled={isLoading}
@@ -218,7 +224,7 @@ export default function SignUpPage() {
                   if (step === 3) successPasswordStep();
                 }}
               >
-                {step === 3 ? "Create account" : "Next"}
+                {step === 3 ? t("Auth.SignUp.createAccount") : t("Common.next")}
                 {isLoading && <Loader className="size-4 ml-2" />}
               </Button>
             </div>

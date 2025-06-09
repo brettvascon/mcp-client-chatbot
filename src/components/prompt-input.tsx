@@ -1,33 +1,40 @@
 "use client";
 
-import { ChevronDown, CornerRightUp, Paperclip, Pause } from "lucide-react";
-import { ReactNode, useMemo, useState } from "react";
+import {
+  AudioWaveformIcon,
+  ChevronDown,
+  CornerRightUp,
+  Paperclip,
+  Pause,
+} from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { Button } from "ui/button";
 import { notImplementedToast } from "ui/shared-toast";
-import { PastesContentCard } from "./pasts-content";
+import { MessagePastesContentCard } from "./message-pasts-content";
 import { UseChatHelpers } from "@ai-sdk/react";
 import { SelectModel } from "./select-model";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
 import { customModelProvider } from "lib/ai/models";
-import { createMCPToolId } from "lib/ai/mcp/mcp-tool-id";
-import { ChatMessageAnnotation } from "app-types/chat";
+import { ChatMention, ChatMessageAnnotation } from "app-types/chat";
 import dynamic from "next/dynamic";
-import { ToolChoiceDropDown } from "./tool-choice-dropdown";
-
-import { MCPServerBindingSelector } from "./mcp-server-binding";
-import { MCPServerBinding } from "app-types/mcp";
+import { ToolModeDropdown } from "./tool-mode-dropdown";
+import { PROMPT_PASTE_MAX_LENGTH } from "lib/const";
+import { ToolSelectDropdown } from "./tool-select-dropdown";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
+import { useTranslations } from "next-intl";
 
 interface PromptInputProps {
   placeholder?: string;
   setInput: (value: string) => void;
   input: string;
   onStop: () => void;
-  ownerType?: MCPServerBinding["ownerType"];
-  ownerId: string;
   append: UseChatHelpers["append"];
-  isTemporaryChat?: boolean;
+  toolDisabled?: boolean;
   isLoading?: boolean;
+  model?: string;
+  setModel?: (model: string) => void;
+  voiceDisabled?: boolean;
 }
 
 const MentionInput = dynamic(() => import("./mention-input"), {
@@ -38,23 +45,39 @@ const MentionInput = dynamic(() => import("./mention-input"), {
 });
 
 export default function PromptInput({
-  placeholder = "What do you want to know?",
+  placeholder,
   append,
+  model,
+  setModel,
   input,
   setInput,
   onStop,
   isLoading,
-  isTemporaryChat,
-  ownerType = "thread",
-  ownerId,
+  toolDisabled,
+  voiceDisabled,
 }: PromptInputProps) {
-  const [appStoreMutate, model, mcpList] = appStore(
-    useShallow((state) => [state.mutate, state.model, state.mcpList]),
+  const t = useTranslations("Chat");
+
+  const [mcpList, globalModel, appStoreMutate] = appStore(
+    useShallow((state) => [state.mcpList, state.model, state.mutate]),
   );
 
-  const [toolMentionItems, setToolMentionItems] = useState<
-    { id: string; label: ReactNode; [key: string]: any }[]
-  >([]);
+  const chatModel = useMemo(() => {
+    return model ?? globalModel;
+  }, [model, globalModel]);
+
+  const setChatModel = useCallback(
+    (model: string) => {
+      if (setModel) {
+        setModel(model);
+      } else {
+        appStoreMutate({ model });
+      }
+    },
+    [setModel, appStoreMutate],
+  );
+
+  const [toolMentionItems, setToolMentionItems] = useState<ChatMention[]>([]);
 
   const modelList = useMemo(() => {
     return customModelProvider.modelsInfo;
@@ -62,37 +85,36 @@ export default function PromptInput({
 
   const [pastedContents, setPastedContents] = useState<string[]>([]);
 
-  const toolList = useMemo(() => {
+  const mentionItems = useMemo(() => {
     return (
-      mcpList
-        ?.filter((mcp) => mcp.status === "connected")
-        .flatMap((mcp) => [
-          {
-            id: mcp.name,
-            label: mcp.name,
-            type: "server",
-          },
-          ...mcp.toolInfo.map((tool) => {
-            const id = createMCPToolId(mcp.name, tool.name);
-            return {
-              id,
-              label: id,
-              type: "tool",
-            };
-          }),
-        ]) ?? []
+      (mcpList?.flatMap((mcp) => [
+        {
+          type: "mcpServer",
+          name: mcp.name,
+          serverId: mcp.id,
+        },
+        ...mcp.toolInfo.map((tool) => {
+          return {
+            type: "tool",
+            name: tool.name,
+            serverId: mcp.id,
+            serverName: mcp.name,
+          };
+        }),
+      ]) as ChatMention[]) ?? []
     );
   }, [mcpList]);
 
   const handlePaste = (e: React.ClipboardEvent) => {
     const text = e.clipboardData.getData("text/plain");
-    if (text.length > 500) {
+    if (text.length > PROMPT_PASTE_MAX_LENGTH) {
       setPastedContents([...pastedContents, text]);
       e.preventDefault();
     }
   };
 
   const submit = () => {
+    if (isLoading) return;
     const userMessage = input?.trim() || "";
 
     const pastedContentsParsed = pastedContents.map((content) => ({
@@ -107,7 +129,7 @@ export default function PromptInput({
     const annotations: ChatMessageAnnotation[] = [];
     if (toolMentionItems.length > 0) {
       annotations.push({
-        requiredTools: toolMentionItems.map((item) => item.id),
+        mentions: toolMentionItems,
       });
     }
     setPastedContents([]);
@@ -131,7 +153,7 @@ export default function PromptInput({
     <div className="max-w-3xl mx-auto fade-in animate-in">
       <div className="z-10 mx-auto w-full max-w-3xl relative">
         <fieldset className="flex w-full min-w-0 max-w-full flex-col px-2">
-          <div className="rounded-4xl backdrop-blur-sm transition-all duration-200 bg-muted/40 relative flex w-full flex-col cursor-text z-10 border items-stretch focus-within:border-muted-foreground hover:border-muted-foreground p-3">
+          <div className="rounded-4xl backdrop-blur-sm transition-all duration-200 bg-muted/80 relative flex w-full flex-col cursor-text z-10 border items-stretch focus-within:border-muted-foreground hover:border-muted-foreground p-3">
             <div className="flex flex-col gap-3.5 px-1">
               <div className="relative min-h-[2rem]">
                 <MentionInput
@@ -139,14 +161,14 @@ export default function PromptInput({
                   onChange={setInput}
                   onChangeMention={setToolMentionItems}
                   onEnter={submit}
-                  placeholder={placeholder}
+                  placeholder={placeholder ?? t("placeholder")}
                   onPaste={handlePaste}
-                  items={toolList}
+                  items={mentionItems}
                 />
               </div>
               <div className="flex w-full items-center gap-2">
                 {pastedContents.map((content, index) => (
-                  <PastesContentCard
+                  <MessagePastesContentCard
                     key={index}
                     initialContent={content}
                     deleteContent={() => {
@@ -174,49 +196,68 @@ export default function PromptInput({
                   <Paperclip className="size-4" />
                 </div>
 
-                <ToolChoiceDropDown />
-                {!isTemporaryChat && (
-                  <MCPServerBindingSelector
-                    ownerId={ownerId}
-                    ownerType={ownerType}
-                    align="start"
-                    side="top"
-                  />
+                {!toolDisabled && (
+                  <>
+                    <ToolModeDropdown />
+                    <ToolSelectDropdown align="start" side="top" />
+                  </>
                 )}
                 <div className="flex-1" />
 
                 <SelectModel
-                  onSelect={(model) => {
-                    appStoreMutate({ model });
-                  }}
+                  onSelect={setChatModel}
                   providers={modelList}
-                  model={model}
+                  model={chatModel}
                 >
-                  <Button variant={"ghost"} className="rounded-full">
-                    {model}
+                  <Button
+                    variant={"ghost"}
+                    className="rounded-full data-[state=open]:bg-input! hover:bg-input!"
+                  >
+                    {chatModel}
                     <ChevronDown className="size-3" />
                   </Button>
                 </SelectModel>
-
-                <div
-                  onClick={() => {
-                    if (isLoading) {
-                      onStop();
-                    } else {
-                      submit();
-                    }
-                  }}
-                  className="cursor-pointer text-muted-foreground rounded-full p-2 bg-secondary hover:bg-accent-foreground hover:text-accent transition-all duration-200"
-                >
-                  {isLoading ? (
-                    <Pause
-                      size={16}
-                      className="fill-muted-foreground text-muted-foreground"
-                    />
-                  ) : (
-                    <CornerRightUp size={16} />
-                  )}
-                </div>
+                {!isLoading && !input.length && !voiceDisabled ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div
+                        onClick={() => {
+                          appStoreMutate((state) => ({
+                            voiceChat: {
+                              ...state.voiceChat,
+                              isOpen: true,
+                              autoSaveConversation: true,
+                            },
+                          }));
+                        }}
+                        className="border fade-in animate-in cursor-pointer text-background rounded-full p-2 bg-primary hover:bg-primary/90 transition-all duration-200"
+                      >
+                        <AudioWaveformIcon size={16} />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("VoiceChat.title")}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <div
+                    onClick={() => {
+                      if (isLoading) {
+                        onStop();
+                      } else {
+                        submit();
+                      }
+                    }}
+                    className="fade-in animate-in cursor-pointer text-muted-foreground rounded-full p-2 bg-secondary hover:bg-accent-foreground hover:text-accent transition-all duration-200"
+                  >
+                    {isLoading ? (
+                      <Pause
+                        size={16}
+                        className="fill-muted-foreground text-muted-foreground"
+                      />
+                    ) : (
+                      <CornerRightUp size={16} />
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

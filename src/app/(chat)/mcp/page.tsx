@@ -9,12 +9,13 @@ import useSWR from "swr";
 import { Skeleton } from "ui/skeleton";
 
 import { handleErrorWithToast } from "ui/shared-toast";
-import { Plus } from "lucide-react";
 import { ScrollArea } from "ui/scroll-area";
+import { useTranslations } from "next-intl";
+import { MCPIcon } from "ui/mcp-icon";
 
 export default function Page() {
   const appStoreMutate = appStore((state) => state.mutate);
-
+  const t = useTranslations("MCP");
   const { data: mcpList, isLoading } = useSWR(
     "mcp-list",
     selectMcpClientsAction,
@@ -34,18 +35,19 @@ export default function Page() {
           <div className="flex-1" />
 
           <div className="flex gap-2">
-            <Link href="https://smithery.ai/" target="_blank">
+            <Link
+              href="https://smithery.ai/"
+              target="_blank"
+              className="hidden sm:block"
+            >
               <Button className="font-semibold" variant={"ghost"}>
-                Server Market
+                {t("marketplace")}
               </Button>
             </Link>
             <Link href="/mcp/create">
-              <Button
-                className="border-dashed border-foreground/20 font-semibold"
-                variant="outline"
-              >
-                <Plus className="stroke-2" />
-                Add MCP Server
+              <Button className="font-semibold bg-input/20" variant="outline">
+                <MCPIcon className="fill-foreground size-3.5" />
+                {t("addMcpServer")}
               </Button>
             </Link>
           </div>
@@ -59,7 +61,7 @@ export default function Page() {
         ) : mcpList?.length ? (
           <div className="flex flex-col gap-6 my-4">
             {mcpList.map((mcp) => (
-              <MCPCard key={mcp.name} {...mcp} />
+              <MCPCard key={mcp.id} {...mcp} />
             ))}
           </div>
         ) : (

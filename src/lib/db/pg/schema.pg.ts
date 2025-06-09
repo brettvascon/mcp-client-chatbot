@@ -1,5 +1,6 @@
 import { ChatMessage, Project } from "app-types/chat";
-import { MCPServerBindingConfig } from "app-types/mcp";
+import { UserPreferences } from "app-types/user";
+import { MCPServerConfig } from "app-types/mcp";
 import { sql } from "drizzle-orm";
 import {
   pgTable,
@@ -7,8 +8,8 @@ import {
   timestamp,
   json,
   uuid,
-  jsonb,
-  primaryKey,
+  boolean,
+  unique,
 } from "drizzle-orm/pg-core";
 
 export const ChatThreadSchema = pgTable("chat_thread", {
@@ -45,25 +46,84 @@ export const ProjectSchema = pgTable("project", {
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const UserSchema = pgTable("user", {
+export const McpServerSchema = pgTable("mcp_server", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  password: text("password").notNull(),
-  image: text("image"),
+  config: json("config").notNull().$type<MCPServerConfig>(),
+  enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const McpServerBindingSchema = pgTable(
-  "mcp_server_binding",
+export const UserSchema = pgTable("user", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  password: text("password"),
+  image: text("image"),
+  preferences: json("preferences").default({}).$type<UserPreferences>(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const SessionSchema = pgTable("session", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  expiresAt: timestamp("expires_at").notNull(),
+  token: text("token").notNull().unique(),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserSchema.id, { onDelete: "cascade" }),
+});
+
+export const AccountSchema = pgTable("account", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserSchema.id, { onDelete: "cascade" }),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
+export const VerificationSchema = pgTable("verification", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").$defaultFn(
+    () => /* @__PURE__ */ new Date(),
+  ),
+  updatedAt: timestamp("updated_at").$defaultFn(
+    () => /* @__PURE__ */ new Date(),
+  ),
+});
+
+// Tool customization table for per-user additional AI instructions
+export const McpToolCustomizationSchema = pgTable(
+  "mcp_server_tool_custom_instructions",
   {
-    ownerType: text("owner_type").notNull(),
-    ownerId: uuid("owner_id").notNull(),
-    config: jsonb("config")
-      .$type<MCPServerBindingConfig>()
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
       .notNull()
-      .default(sql`'{}'::jsonb`),
+      .references(() => UserSchema.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    mcpServerId: uuid("mcp_server_id")
+      .notNull()
+      .references(() => McpServerSchema.id, { onDelete: "cascade" }),
+    prompt: text("prompt"),
     createdAt: timestamp("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -71,21 +131,36 @@ export const McpServerBindingSchema = pgTable(
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
-  (tbl) => [primaryKey({ columns: [tbl.ownerType, tbl.ownerId] })],
+  (table) => [unique().on(table.userId, table.toolName, table.mcpServerId)],
 );
 
-// export const McpServerSchema = pgTable("mcp_server", {
-//   id: uuid("id").primaryKey().notNull().defaultRandom(),
-//   name: text("name").notNull(),
-//   config: json("config").notNull(),
-//   enabled: boolean("enabled").notNull().default(true),
-//   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-//   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-// });
+export const McpServerCustomizationSchema = pgTable(
+  "mcp_server_custom_instructions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserSchema.id, { onDelete: "cascade" }),
+    mcpServerId: uuid("mcp_server_id")
+      .notNull()
+      .references(() => McpServerSchema.id, { onDelete: "cascade" }),
+    prompt: text("prompt"),
+    createdAt: timestamp("created_at")
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp("updated_at")
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [unique().on(table.userId, table.mcpServerId)],
+);
 
+export type McpServerEntity = typeof McpServerSchema.$inferSelect;
 export type ChatThreadEntity = typeof ChatThreadSchema.$inferSelect;
 export type ChatMessageEntity = typeof ChatMessageSchema.$inferSelect;
 export type ProjectEntity = typeof ProjectSchema.$inferSelect;
 export type UserEntity = typeof UserSchema.$inferSelect;
-export type McpServerBindingEntity = typeof McpServerBindingSchema.$inferSelect;
-// export type McpServerEntity = typeof McpServerSchema.$inferSelect;
+export type ToolCustomizationEntity =
+  typeof McpToolCustomizationSchema.$inferSelect;
+export type McpServerCustomizationEntity =
+  typeof McpServerCustomizationSchema.$inferSelect;

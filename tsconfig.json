@@ -27,10 +27,11 @@
     ],
     "paths": {
       "ui/*": ["./src/components/ui/*"],
-      "service/*": ["./src/service/*"],
+      "auth/*": ["./src/lib/auth/*"],
       "app-types/*": ["./src/types/*"],
       "logger": ["./src/lib/logger.ts"],
       "lib/*": ["./src/lib/*"],
+      "load-env": ["./src/lib/load-env.ts"],
       "@/*": ["./src/*"]
     }
   },

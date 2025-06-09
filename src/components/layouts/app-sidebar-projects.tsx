@@ -5,7 +5,14 @@ import Link from "next/link";
 import { SidebarMenuButton, SidebarMenuSkeleton } from "ui/sidebar";
 import { SidebarGroupContent, SidebarMenu, SidebarMenuItem } from "ui/sidebar";
 import { SidebarGroup } from "ui/sidebar";
-import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  FolderOpen,
+  Folders,
+  MoreHorizontal,
+  Plus,
+} from "lucide-react";
 
 import { useMounted } from "@/hooks/use-mounted";
 import { appStore } from "@/app/store";
@@ -19,10 +26,14 @@ import { selectProjectListByUserIdAction } from "@/app/api/chat/actions";
 import { handleErrorWithToast } from "ui/shared-toast";
 import { CreateProjectPopup } from "../create-project-popup";
 import { ProjectDropdown } from "../project-dropdown";
+import { useTranslations } from "next-intl";
+import { useState } from "react";
 
 export function AppSidebarProjects() {
   const mounted = useMounted();
+  const t = useTranslations("Layout");
 
+  const [expanded, setExpanded] = useState(false);
   const [storeMutate, currentProjectId] = appStore(
     useShallow((state) => [state.mutate, state.currentProjectId]),
   );
@@ -37,14 +48,17 @@ export function AppSidebarProjects() {
     },
   );
 
+  const visibleProjects = expanded ? projectList : projectList.slice(0, 3);
+  const hasMoreProjects = projectList.length > 3;
+
   return (
     <SidebarGroup>
       <SidebarGroupContent className="group-data-[collapsible=icon]:hidden group/projects">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarGroupLabel className="">
-              <h4 className="text-xs text-muted-foreground flex items-center gap-1">
-                Projects
+              <h4 className="text-xs text-muted-foreground flex items-center gap-1 group-hover/projects:text-foreground transition-colors">
+                {t("projects")}
               </h4>
               <div className="flex-1" />
 
@@ -54,14 +68,14 @@ export function AppSidebarProjects() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="opacity-0 group-hover/projects:opacity-100"
+                      className="opacity-0 group-hover/projects:opacity-100 hover:bg-input!"
                     >
                       <Plus />
                     </Button>
                   </CreateProjectPopup>
                 </TooltipTrigger>
                 <TooltipContent side="right">
-                  <p>New Project</p>
+                  <p>{t("newProject")}</p>
                 </TooltipContent>
               </Tooltip>
             </SidebarGroupLabel>
@@ -75,9 +89,9 @@ export function AppSidebarProjects() {
                 <CreateProjectPopup>
                   <div className="py-4 px-4 hover:bg-accent rounded-2xl cursor-pointer flex justify-between items-center">
                     <div className="gap-1">
-                      <p className="font-semibold mb-1">Create a project </p>
+                      <p className="font-semibold mb-1">{t("createProject")}</p>
                       <p className="text-muted-foreground">
-                        To organize your ideas
+                        {t("toOrganizeIdeas")}
                       </p>
                     </div>
                     <FolderOpen className="size-4" />
@@ -86,37 +100,74 @@ export function AppSidebarProjects() {
               </div>
             ) : (
               <div className="flex flex-col gap-1">
-                {projectList?.map((project) => (
-                  <SidebarMenu
-                    key={project.id}
-                    className={"group/project mr-0"}
-                  >
+                {visibleProjects?.map((project) => {
+                  const isSelected = currentProjectId === project.id;
+                  return (
+                    <SidebarMenu
+                      key={project.id}
+                      className={"group/project mr-0"}
+                    >
+                      <SidebarMenuItem className="px-2 cursor-pointer">
+                        <ProjectDropdown project={project} side="right">
+                          <SidebarMenuButton
+                            asChild
+                            isActive={isSelected}
+                            className="data-[state=open]:bg-input!"
+                          >
+                            <div className="flex gap-1">
+                              <div className="p-1 rounded-md hover:bg-foreground/40">
+                                <FolderOpen className="size-4" />
+                              </div>
+
+                              <Link
+                                href={`/project/${project.id}`}
+                                className="flex items-center min-w-0 w-full"
+                              >
+                                <p className="truncate">{project.name}</p>
+                              </Link>
+                              <SidebarMenuAction className="opacity-0 group-hover/project:opacity-100 mr-2">
+                                <MoreHorizontal className="size-4" />
+                              </SidebarMenuAction>
+                            </div>
+                          </SidebarMenuButton>
+                        </ProjectDropdown>
+                      </SidebarMenuItem>
+                    </SidebarMenu>
+                  );
+                })}
+
+                {hasMoreProjects && (
+                  <SidebarMenu className="group/project mr-0">
                     <SidebarMenuItem className="px-2 cursor-pointer">
                       <SidebarMenuButton
                         asChild
-                        isActive={currentProjectId === project.id}
+                        onClick={() => setExpanded(!expanded)}
                       >
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 text-muted-foreground">
                           <div className="p-1 rounded-md hover:bg-foreground/40">
-                            <FolderOpen className="size-4" />
+                            <Folders className="size-4" />
                           </div>
 
-                          <Link
-                            href={`/project/${project.id}`}
-                            className="flex items-center min-w-0 w-full"
-                          >
-                            <p className="truncate">{project.name}</p>
-                          </Link>
-                          <SidebarMenuAction className="opacity-0 group-hover/project:opacity-100 mr-2">
-                            <ProjectDropdown project={project} side="right">
-                              <MoreHorizontal className="size-4" />
-                            </ProjectDropdown>
-                          </SidebarMenuAction>
+                          <p>
+                            {expanded
+                              ? t("showLessProjects", {
+                                  count: projectList.length - 3,
+                                })
+                              : t("showMoreProjects", {
+                                  count: projectList.length - 3,
+                                })}
+                          </p>
+
+                          {expanded ? (
+                            <ChevronUp className="size-4" />
+                          ) : (
+                            <ChevronDown className="size-4" />
+                          )}
                         </div>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   </SidebarMenu>
-                ))}
+                )}
               </div>
             )}
           </SidebarMenuItem>

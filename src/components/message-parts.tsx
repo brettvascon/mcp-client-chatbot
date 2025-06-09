@@ -10,14 +10,24 @@ import {
   ChevronDownIcon,
   RefreshCw,
   X,
+  Wrench,
+  Trash2,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { Button } from "ui/button";
 import { Markdown } from "./markdown";
-import { PastesContentCard } from "./pasts-content";
-import { cn } from "lib/utils";
+import { MessagePastesContentCard } from "./message-pasts-content";
+import { cn, safeJSONParse, toAny } from "lib/utils";
 import JsonView from "ui/json-view";
-import { useMemo, useState, memo, useEffect, useRef, Suspense } from "react";
+import {
+  useMemo,
+  useState,
+  memo,
+  useEffect,
+  useRef,
+  Suspense,
+  useCallback,
+} from "react";
 import { MessageEditor } from "./message-editor";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import { useCopy } from "@/hooks/use-copy";
@@ -26,7 +36,10 @@ import { Card, CardContent } from "ui/card";
 import { AnimatePresence, motion } from "framer-motion";
 import { SelectModel } from "./select-model";
 import { customModelProvider } from "lib/ai/models";
-import { deleteMessagesByChatIdAfterTimestampAction } from "@/app/api/chat/actions";
+import {
+  deleteMessageAction,
+  deleteMessagesByChatIdAfterTimestampAction,
+} from "@/app/api/chat/actions";
 
 import { toast } from "sonner";
 import { safe } from "ts-safe";
@@ -36,6 +49,7 @@ import { Skeleton } from "ui/skeleton";
 import { PieChart } from "./tool-invocation/pie-chart";
 import { BarChart } from "./tool-invocation/bar-chart";
 import { LineChart } from "./tool-invocation/line-chart";
+import { PROMPT_PASTE_MAX_LENGTH } from "lib/const";
 
 type MessagePart = UIMessage["parts"][number];
 
@@ -50,21 +64,27 @@ interface UserMessagePartProps {
   setMessages: UseChatHelpers["setMessages"];
   reload: UseChatHelpers["reload"];
   status: UseChatHelpers["status"];
+  isError?: boolean;
 }
 
 interface AssistMessagePartProps {
   part: AssistMessagePart;
   message: UIMessage;
-  isLast: boolean;
-  threadId: string;
+  showActions: boolean;
+  threadId?: string;
   setMessages: UseChatHelpers["setMessages"];
   reload: UseChatHelpers["reload"];
+  isError?: boolean;
 }
 
 interface ToolMessagePartProps {
   part: ToolMessagePart;
-  isLast: boolean;
+  message: UIMessage;
+  showActions: boolean;
+  isLast?: boolean;
   onPoxyToolCall?: (answer: boolean) => void;
+  isError?: boolean;
+  setMessages?: UseChatHelpers["setMessages"];
 }
 
 interface HighlightedTextProps {
@@ -97,9 +117,11 @@ export const UserMessagePart = ({
   message,
   setMessages,
   reload,
+  isError,
 }: UserMessagePartProps) => {
   const { copied, copy } = useCopy();
   const [mode, setMode] = useState<"view" | "edit">("view");
+  const [isDeleting, setIsDeleting] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const toolMentions = useMemo(() => {
     if (!message.annotations?.length) return [];
@@ -107,13 +129,30 @@ export const UserMessagePart = ({
       new Set(
         message.annotations
           .flatMap((annotation) => {
-            return (annotation as ChatMessageAnnotation).requiredTools ?? [];
+            return (annotation as ChatMessageAnnotation).mentions ?? [];
           })
           .filter(Boolean)
-          .map((v) => `@${v}`),
+          .map((v) => `@${v.name}`),
       ),
     );
   }, [message.annotations]);
+
+  const deleteMessage = useCallback(() => {
+    safe(() => setIsDeleting(true))
+      .ifOk(() => deleteMessageAction(message.id))
+      .ifOk(() =>
+        setMessages((messages) => {
+          const index = messages.findIndex((m) => m.id === message.id);
+          if (index !== -1) {
+            return messages.filter((_, i) => i !== index);
+          }
+          return messages;
+        }),
+      )
+      .ifFail((error) => toast.error(error.message))
+      .watch(() => setIsDeleting(false))
+      .unwrap();
+  }, [message.id]);
 
   useEffect(() => {
     if (status === "submitted" && isLast) {
@@ -141,37 +180,28 @@ export const UserMessagePart = ({
           ref.current?.scrollIntoView({ behavior: "smooth" });
         }}
         data-testid="message-content"
-        className={cn("flex flex-col gap-4", {
-          "bg-accent text-accent-foreground border px-4 py-3 rounded-2xl":
-            isLast,
-        })}
+        className={cn(
+          "flex flex-col gap-4",
+          {
+            "bg-accent text-accent-foreground px-4 py-3 rounded-2xl":
+              isLast || part.text.length <= PROMPT_PASTE_MAX_LENGTH,
+            "opacity-50": isError,
+          },
+          isError && "border-destructive border",
+        )}
       >
-        {isLast ? (
-          <p className="whitespace-pre-wrap text-sm">
+        {isLast || part.text.length <= PROMPT_PASTE_MAX_LENGTH ? (
+          <p className={cn("whitespace-pre-wrap text-sm")}>
             <HighlightedText text={part.text} mentions={toolMentions} />
           </p>
         ) : (
-          <PastesContentCard initialContent={part.text} readonly />
+          <MessagePastesContentCard initialContent={part.text} readonly />
         )}
       </div>
 
       <div className="flex w-full justify-end">
         {isLast && (
           <>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  data-testid="message-edit-button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-3! p-4! opacity-0 group-hover/message:opacity-100"
-                  onClick={() => setMode("edit")}
-                >
-                  <Pencil />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Edit</TooltipContent>
-            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -188,6 +218,41 @@ export const UserMessagePart = ({
               </TooltipTrigger>
               <TooltipContent side="bottom">Copy</TooltipContent>
             </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  data-testid="message-edit-button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-3! p-4! opacity-0 group-hover/message:opacity-100"
+                  onClick={() => setMode("edit")}
+                >
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Edit</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  disabled={isDeleting}
+                  onClick={deleteMessage}
+                  variant="ghost"
+                  size="icon"
+                  className="size-3! p-4! opacity-0 group-hover/message:opacity-100 hover:text-destructive"
+                >
+                  {isDeleting ? (
+                    <Loader className="animate-spin" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="text-destructive" side="bottom">
+                Delete Message
+              </TooltipContent>
+            </Tooltip>
           </>
         )}
       </div>
@@ -200,18 +265,41 @@ const modelList = customModelProvider.modelsInfo;
 
 export const AssistMessagePart = ({
   part,
-  isLast,
+  showActions,
   reload,
   message,
   setMessages,
+  isError,
   threadId,
 }: AssistMessagePartProps) => {
   const { copied, copy } = useCopy();
   const [isLoading, setIsLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const deleteMessage = useCallback(() => {
+    safe(() => setIsDeleting(true))
+      .ifOk(() => deleteMessageAction(message.id))
+      .ifOk(() =>
+        setMessages((messages) => {
+          const index = messages.findIndex((m) => m.id === message.id);
+          if (index !== -1) {
+            return messages.filter((_, i) => i !== index);
+          }
+          return messages;
+        }),
+      )
+      .ifFail((error) => toast.error(error.message))
+      .watch(() => setIsDeleting(false))
+      .unwrap();
+  }, [message.id]);
 
   const handleModelChange = (model: string) => {
     safe(() => setIsLoading(true))
-      .ifOk(() => deleteMessagesByChatIdAfterTimestampAction(message.id))
+      .ifOk(() =>
+        threadId
+          ? deleteMessagesByChatIdAfterTimestampAction(message.id)
+          : Promise.resolve(),
+      )
       .ifOk(() =>
         setMessages((messages) => {
           const index = messages.findIndex((m) => m.id === message.id);
@@ -239,10 +327,15 @@ export const AssistMessagePart = ({
     <div
       className={cn(isLoading && "animate-pulse", "flex flex-col gap-2 group")}
     >
-      <div data-testid="message-content" className="flex flex-col gap-4">
+      <div
+        data-testid="message-content"
+        className={cn("flex flex-col gap-4 px-2", {
+          "opacity-50 border border-destructive bg-card rounded-lg": isError,
+        })}
+      >
         <Markdown>{part.text}</Markdown>
       </div>
-      {isLast && (
+      {showActions && (
         <div className="flex w-full ">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -283,6 +376,22 @@ export const AssistMessagePart = ({
             </TooltipTrigger>
             <TooltipContent>Change Model</TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={isDeleting}
+                onClick={deleteMessage}
+                className="size-3! p-4! opacity-0 group-hover/message:opacity-100 hover:text-destructive"
+              >
+                {isDeleting ? <Loader className="animate-spin" /> : <Trash2 />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="text-destructive" side="bottom">
+              Delete Message
+            </TooltipContent>
+          </Tooltip>
         </div>
       )}
     </div>
@@ -290,13 +399,38 @@ export const AssistMessagePart = ({
 };
 
 export const ToolMessagePart = memo(
-  ({ part, isLast, onPoxyToolCall }: ToolMessagePartProps) => {
+  ({
+    part,
+    isLast,
+    showActions,
+    onPoxyToolCall,
+    isError,
+    message,
+    setMessages,
+  }: ToolMessagePartProps) => {
     const { toolInvocation } = part;
     const { toolName, toolCallId, state, args } = toolInvocation;
     const [isExpanded, setIsExpanded] = useState(false);
-
+    const { copied: copiedInput, copy: copyInput } = useCopy();
+    const { copied: copiedOutput, copy: copyOutput } = useCopy();
+    const [isDeleting, setIsDeleting] = useState(false);
     const isExecuting = state !== "result" && (isLast || onPoxyToolCall);
-
+    const deleteMessage = useCallback(() => {
+      safe(() => setIsDeleting(true))
+        .ifOk(() => deleteMessageAction(message.id))
+        .ifOk(() =>
+          setMessages?.((messages) => {
+            const index = messages.findIndex((m) => m.id === message.id);
+            if (index !== -1) {
+              return messages.filter((_, i) => i !== index);
+            }
+            return messages;
+          }),
+        )
+        .ifFail((error) => toast.error(error.message))
+        .watch(() => setIsDeleting(false))
+        .unwrap();
+    }, [message.id, setMessages]);
     const ToolResultComponent = useMemo(() => {
       if (state === "result") {
         switch (toolName) {
@@ -338,8 +472,29 @@ export const ToolMessagePart = memo(
       return null;
     }, [toolName, state]);
 
+    const result = useMemo(() => {
+      if (state === "result") {
+        return toolInvocation.result?.content
+          ? {
+              ...toolInvocation.result,
+              content: toolInvocation.result.content.map((node) => {
+                if (node.type === "text") {
+                  const parsed = safeJSONParse(node.text);
+                  return {
+                    ...node,
+                    text: parsed.success ? parsed.value : node.text,
+                  };
+                }
+                return node;
+              }),
+            }
+          : toolInvocation.result;
+      }
+      return null;
+    }, [state, toolInvocation]);
+
     return (
-      <div key={toolCallId} className="flex flex-col gap-2 group">
+      <div key={toolCallId} className="flex flex-col gap-2 group w-full">
         {ToolResultComponent ? (
           ToolResultComponent
         ) : (
@@ -350,9 +505,11 @@ export const ToolMessagePart = memo(
                 variant="outline"
                 className={cn(
                   "flex flex-row gap-2 justify-between items-center text-muted-foreground min-w-44 bg-card",
-                  isExecuting && "animate-pulse",
+                  isExecuting && "animate-pulse bg-input",
+                  isError && "border-destructive",
                 )}
               >
+                <Wrench className="size-3.5" />
                 <p className={cn("font-bold")}>{toolName}</p>
                 {isExecuting ? (
                   <Loader className="size-3 animate-spin" />
@@ -370,6 +527,7 @@ export const ToolMessagePart = memo(
                 <>
                   <Button
                     variant="outline"
+                    className="bg-input"
                     size="icon"
                     onClick={() => onPoxyToolCall(true)}
                   >
@@ -389,10 +547,26 @@ export const ToolMessagePart = memo(
               <Card className="relative mt-2 p-4 max-h-[50vh] overflow-y-auto bg-card">
                 <CardContent className="flex flex-row gap-4 text-sm ">
                   <div className="w-1/2 min-w-0 flex flex-col">
-                    <div className="flex items-center gap-2 mb-2 pt-2 pb-1  z-10">
+                    <div className="flex items-center gap-2 mb-2 pt-2 pb-1 z-10">
                       <h5 className="text-muted-foreground text-sm font-medium">
                         Inputs
                       </h5>
+                      <div className="flex-1" />
+
+                      {copiedInput ? (
+                        <Check className="size-4" />
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-3 text-muted-foreground"
+                          onClick={() =>
+                            copyInput(JSON.stringify(toolInvocation.args))
+                          }
+                        >
+                          <Copy />
+                        </Button>
+                      )}
                     </div>
                     <JsonView data={toolInvocation.args} />
                   </div>
@@ -402,17 +576,52 @@ export const ToolMessagePart = memo(
                       <h5 className="text-muted-foreground text-sm font-medium">
                         Outputs
                       </h5>
+                      <div className="flex-1" />
+                      {copiedOutput ? (
+                        <Check className="size-4" />
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-3 text-muted-foreground"
+                          onClick={() =>
+                            copyOutput(
+                              JSON.stringify(toAny(toolInvocation).result),
+                            )
+                          }
+                        >
+                          <Copy />
+                        </Button>
+                      )}
                     </div>
-                    <JsonView
-                      data={
-                        toolInvocation.state === "result"
-                          ? toolInvocation.result
-                          : null
-                      }
-                    />
+                    <JsonView data={result} />
                   </div>
                 </CardContent>
               </Card>
+            )}
+            {showActions && (
+              <div className="flex flex-row gap-2 items-center">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      disabled={isDeleting}
+                      onClick={deleteMessage}
+                      variant="ghost"
+                      size="icon"
+                      className="size-3! p-4! opacity-0 group-hover/message:opacity-100 hover:text-destructive"
+                    >
+                      {isDeleting ? (
+                        <Loader className="animate-spin" />
+                      ) : (
+                        <Trash2 />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent className="text-destructive" side="bottom">
+                    Delete Message
+                  </TooltipContent>
+                </Tooltip>
+              </div>
             )}
           </>
         )}

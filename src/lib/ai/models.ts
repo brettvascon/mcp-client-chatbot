@@ -1,10 +1,14 @@
-import { ollama } from "ollama-ai-provider";
+import { createOllama } from "ollama-ai-provider";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import { anthropic } from "@ai-sdk/anthropic";
 import { xai } from "@ai-sdk/xai";
-import { LanguageModel, wrapLanguageModel } from "ai";
-import { gemmaToolMiddleware } from "@ai-sdk-tool/parser";
+import { LanguageModel } from "ai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
+
+const ollama = createOllama({
+  baseURL: process.env.OLLAMA_BASE_URL || "http://localhost:11434/api",
+});
 
 export const allModels = {
   openai: {
@@ -17,31 +21,27 @@ export const allModels = {
     }),
   },
   google: {
-    "gemini-2.0": google("gemini-2.0-flash-exp"),
-    "gemini-2.0-thinking": google("gemini-2.0-flash-exp"),
-    "gemini-2.5-pro": google("gemini-2.5-pro-exp-03-25"),
+    "gemini-2.5-flash": google("gemini-2.5-flash-preview-04-17"),
+    "gemini-2.5-pro": google("gemini-2.5-pro-preview-05-06"),
   },
   anthropic: {
     "claude-3-5-sonnet": anthropic("claude-3-5-sonnet-latest"),
     "claude-3-7-sonnet": anthropic("claude-3-7-sonnet-latest"),
+    "claude-4-sonnet": anthropic("claude-sonnet-4-20250514"),
   },
   xai: {
     "grok-2": xai("grok-2-1212"),
-    "grok-3-mini": xai("grok-3-mini-beta"),
-    "grok-3": xai("grok-3-beta"),
+    "grok-3-mini": xai("grok-3-mini-latest"),
+    "grok-3": xai("grok-3-latest"),
   },
   ollama: {
     "gemma3:1b": ollama("gemma3:1b"),
-    "gemma3:4b": wrapLanguageModel({
-      model: ollama("gemma3:4b", {
-        simulateStreaming: true,
-      }),
-      middleware: gemmaToolMiddleware,
-    }),
-    "gemma3:12b": wrapLanguageModel({
-      model: ollama("gemma3:12b"),
-      middleware: gemmaToolMiddleware,
-    }),
+    "gemma3:4b": ollama("gemma3:4b"),
+    "gemma3:12b": ollama("gemma3:12b"),
+  },
+  openRouter: {
+    "qwen3-8b:free": openrouter("qwen/qwen3-8b:free"),
+    "qwen3-14b:free": openrouter("qwen/qwen3-14b:free"),
   },
 } as const;
 
@@ -53,10 +53,14 @@ export const isToolCallUnsupportedModel = (model: LanguageModel) => {
     allModels.xai["grok-3-mini"],
     allModels.google["gemini-2.0-thinking"],
     allModels.ollama["gemma3:1b"],
+    allModels.ollama["gemma3:4b"],
+    allModels.ollama["gemma3:12b"],
+    allModels.openRouter["qwen3-8b:free"],
+    allModels.openRouter["qwen3-14b:free"],
   ].includes(model);
 };
 
-export const DEFAULT_MODEL = "gpt-4.1-mini";
+export const DEFAULT_MODEL = "4o";
 
 const fallbackModel = allModels.openai[DEFAULT_MODEL];
 
